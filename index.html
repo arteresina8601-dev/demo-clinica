@@ -1117,40 +1117,74 @@ async function doSend(text) {
   showTyping();
 
   try {
-    // Build Gemini conversation format
-    const geminiMessages = [];
-    // Add system as first user message
-    geminiMessages.push({
-      role: 'user',
-      parts: [{ text: SYSTEM + '\n\nEmpecemos la conversación.' }]
-    });
-    geminiMessages.push({
-      role: 'model',
-      parts: [{ text: '¡Entendido! Estoy listo para atender a los pacientes.' }]
-    });
-    // Add conversation history
-    for (const msg of history) {
-      geminiMessages.push({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content }]
+    // ══════════════════════════════════════════
+    // CLAVES API — reemplaza cada XXXXXXX
+    // ══════════════════════════════════════════
+    const GROQ_KEY       = 'GROQ_API_KEY_AQUI';
+    const OPENROUTER_KEY = 'OPENROUTER_API_KEY_AQUI';
+    const GEMINI_KEY     = 'GEMINI_API_KEY_AQUI';
+
+    // Intenta Groq primero
+    async function tryGroq(msgs) {
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + GROQ_KEY },
+        body: JSON.stringify({
+          model: 'llama3-8b-8192',
+          messages: [{ role: 'system', content: SYSTEM }, ...msgs],
+          max_tokens: 400
+        })
       });
+      if (!r.ok) throw new Error('Groq failed');
+      const d = await r.json();
+      return d.choices[0].message.content.trim();
     }
 
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyALM4oCw87S_brs_NTYB7nxEhUMKZI3EDo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: geminiMessages })
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData?.error?.message || 'Error ' + res.status);
+    // Intenta OpenRouter segundo
+    async function tryOpenRouter(msgs) {
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + OPENROUTER_KEY },
+        body: JSON.stringify({
+          model: 'mistralai/mistral-7b-instruct:free',
+          messages: [{ role: 'system', content: SYSTEM }, ...msgs],
+          max_tokens: 400
+        })
+      });
+      if (!r.ok) throw new Error('OpenRouter failed');
+      const d = await r.json();
+      return d.choices[0].message.content.trim();
     }
 
-    const data = await res.json();
-    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'No pude generar respuesta.';
+    // Intenta Gemini tercero
+    async function tryGemini(msgs) {
+      const geminiMsgs = [
+        { role: 'user', parts: [{ text: SYSTEM + '\n\nEmpecemos.' }] },
+        { role: 'model', parts: [{ text: 'Listo para atender.' }] }
+      ];
+      for (const m of msgs) {
+        geminiMsgs.push({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] });
+      }
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: geminiMsgs })
+      });
+      if (!r.ok) throw new Error('Gemini failed');
+      const d = await r.json();
+      return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
+
+    // Fallback automático: Groq → OpenRouter → Gemini
+    let reply = null;
+    const errors = [];
+    for (const fn of [tryGroq, tryOpenRouter, tryGemini]) {
+      try { reply = await fn(history); break; }
+      catch(e) { errors.push(e.message); }
+    }
+    if (!reply) throw new Error('Todos los servicios fallaron: ' + errors.join(' | '));
+
     history.push({role:'assistant', content: reply});
-
     hideTyping();
     appendMsg(reply, 'in');
   } catch(e) {
